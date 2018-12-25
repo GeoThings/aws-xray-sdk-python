@@ -1,4 +1,5 @@
 import logging
+from os import environ
 
 from aws_xray_sdk.core import xray_recorder
 from aws_xray_sdk.core.models import http
@@ -33,27 +34,39 @@ class XRayMiddleware(object):
         xray_header = construct_xray_header(meta)
         # a segment name is required
         name = calculate_segment_name(meta.get(HOST_KEY), xray_recorder)
+        if not name:
+            name = 'handler'
 
-        sampling_req = {
-            'host': meta.get(HOST_KEY),
-            'method': request.method,
-            'path': request.path,
-            'service': name,
-        }
-        sampling_decision = calculate_sampling_decision(
-            trace_header=xray_header,
-            recorder=xray_recorder,
-            sampling_req=sampling_req,
-        )
+        # sampling_req = {
+        #     'host': meta.get(HOST_KEY),
+        #     'method': request.method,
+        #     'path': request.path,
+        #     'service': name,
+        # }
+        # sampling_decision = calculate_sampling_decision(
+        #     trace_header=xray_header,
+        #     recorder=xray_recorder,
+        #     sampling_req=sampling_req,
+        # )
+        #
+        # segment = xray_recorder.begin_segment(
+        #     name=name,
+        #     traceid=xray_header.root,
+        #     parent_id=xray_header.parent,
+        #     sampling=sampling_decision,
+        # )
 
-        segment = xray_recorder.begin_segment(
-            name=name,
-            traceid=xray_header.root,
-            parent_id=xray_header.parent,
-            sampling=sampling_decision,
-        )
+        if environ.get('AWS_EXECUTION_ENV', '').startswith('AWS_Lambda_'):
+            segment = xray_recorder.begin_subsegment(name)
+        else:
+            segment = xray_recorder.begin_segment(
+                name=name,
+                traceid=xray_header.root,
+                parent_id=xray_header.parent,
+                sampling=sampling_decision,
+            )
 
-        segment.save_origin_trace_header(xray_header)
+        # segment.save_origin_trace_header(xray_header)
         segment.put_http_meta(http.URL, request.build_absolute_uri())
         segment.put_http_meta(http.METHOD, request.method)
 
@@ -75,7 +88,7 @@ class XRayMiddleware(object):
             segment.put_http_meta(http.CONTENT_LENGTH, length)
         response[http.XRAY_HEADER] = prepare_response_header(xray_header, segment)
 
-        xray_recorder.end_segment()
+        xray_recorder.end_subsegment()
 
         return response
 
@@ -84,7 +97,11 @@ class XRayMiddleware(object):
         Add exception information and fault flag to the
         current segment.
         """
-        segment = xray_recorder.current_segment()
+
+        if not environ.get('AWS_EXECUTION_ENV', '').startswith('AWS_Lambda_'):
+            return
+
+        segment = xray_recorder.current_subsegment()
         segment.put_http_meta(http.STATUS, 500)
 
         stack = stacktrace.get_stacktrace(limit=xray_recorder._max_trace_back)
